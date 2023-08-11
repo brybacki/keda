@@ -22,6 +22,8 @@ var testMetricsAPIMetadata = []metricsAPIMetadataTestData{
 	{metadata: map[string]string{}, raisesError: true},
 	// OK
 	{metadata: map[string]string{"url": "http://dummy:1230/api/v1/", "valueLocation": "metric.test", "targetValue": "42"}, raisesError: false},
+	// OK with optional format
+	{metadata: map[string]string{"url": "http://dummy:1230/api/v1/", "valueLocation": "metric.test", "targetValue": "42", "format": "json"}, raisesError: false},
 	// Target not an int
 	{metadata: map[string]string{"url": "http://dummy:1230/api/v1/", "valueLocation": "metric", "targetValue": "aa"}, raisesError: true},
 	// Activation target not an int
@@ -32,6 +34,8 @@ var testMetricsAPIMetadata = []metricsAPIMetadataTestData{
 	{metadata: map[string]string{"valueLocation": "metric", "targetValue": "aa"}, raisesError: true},
 	// Missing targetValue
 	{metadata: map[string]string{"url": "http://dummy:1230/api/v1/", "valueLocation": "metric"}, raisesError: true},
+	// Format not suppoeted
+	{metadata: map[string]string{"url": "http://dummy:1230/api/v1/", "valueLocation": "metric.test", "targetValue": "42", "format": "xml"}, raisesError: true},
 }
 
 type metricAPIAuthMetadataTestData struct {
@@ -122,7 +126,7 @@ func TestMetricsAPIGetMetricSpecForScaling(t *testing.T) {
 
 func TestGetValueFromResponse(t *testing.T) {
 	d := []byte(`{"components":[{"id": "82328e93e", "tasks": 32, "str": "64", "k":"1k","wrong":"NaN"}],"count":2.43}`)
-	v, err := GetValueFromResponse(d, "components.0.tasks")
+	v, err := GetValueFromResponse(d, "components.0.tasks", "json")
 	if err != nil {
 		t.Error("Expected success but got error", err)
 	}
@@ -130,7 +134,7 @@ func TestGetValueFromResponse(t *testing.T) {
 		t.Errorf("Expected %d got %f", 32, v)
 	}
 
-	v, err = GetValueFromResponse(d, "count")
+	v, err = GetValueFromResponse(d, "count", "json")
 	if err != nil {
 		t.Error("Expected success but got error", err)
 	}
@@ -138,7 +142,7 @@ func TestGetValueFromResponse(t *testing.T) {
 		t.Errorf("Expected %d got %f", 2, v)
 	}
 
-	v, err = GetValueFromResponse(d, "components.0.str")
+	v, err = GetValueFromResponse(d, "components.0.str", "json")
 	if err != nil {
 		t.Error("Expected success but got error", err)
 	}
@@ -146,7 +150,7 @@ func TestGetValueFromResponse(t *testing.T) {
 		t.Errorf("Expected %d got %f", 64, v)
 	}
 
-	v, err = GetValueFromResponse(d, "components.0.k")
+	v, err = GetValueFromResponse(d, "components.0.k", "json")
 	if err != nil {
 		t.Error("Expected success but got error", err)
 	}
@@ -154,7 +158,47 @@ func TestGetValueFromResponse(t *testing.T) {
 		t.Errorf("Expected %d got %f", 1000, v)
 	}
 
-	_, err = GetValueFromResponse(d, "components.0.wrong")
+	_, err = GetValueFromResponse(d, "components.0.wrong", "json")
+	if err == nil {
+		t.Error("Expected error but got success", err)
+	}
+}
+
+func TestGetValueFromResponsePrometheus(t *testing.T) {
+	d := []byte(`# HELP go_gc_duration_seconds A summary of the pause duration of garbage collection cycles.
+	# TYPE go_gc_duration_seconds summary
+	go_gc_duration_seconds{quantile="0"} 3.14
+	go_gc_duration_seconds{quantile="0.25"} 4.1702e-05
+	go_gc_duration_seconds{quantile="0.5"} 5.5934e-05
+	go_gc_duration_seconds{quantile="0.75"} 7.9094e-05
+	go_gc_duration_seconds{quantile="1"} 0.000207075
+	go_gc_duration_seconds_sum 0.002389922
+	go_gc_duration_seconds_count 37`)
+	v, err := GetValueFromResponse(d, "go_gc_duration_seconds{quantile=\"0\"}", "prometheus")
+	if err != nil {
+		t.Error("Expected success but got error", err)
+	}
+	if v != 3.14 {
+		t.Errorf("Expected %f got %f", 3.14, v)
+	}
+
+	v, err = GetValueFromResponse(d, "go_gc_duration_seconds{quantile=\"0.75\"}", "prometheus")
+	if err != nil {
+		t.Error("Expected success but got error", err)
+	}
+	if v != 7.9094e-05 {
+		t.Errorf("Expected %f got %f", 7.9094e-05, v)
+	}
+
+	v, err = GetValueFromResponse(d, "go_gc_duration_seconds_count", "prometheus")
+	if err != nil {
+		t.Error("Expected success but got error", err)
+	}
+	if v != 37 {
+		t.Errorf("Expected %d got %f", 37, v)
+	}
+
+	_, err = GetValueFromResponse(d, "components_wrong", "prometheus")
 	if err == nil {
 		t.Error("Expected error but got success", err)
 	}

@@ -1,6 +1,8 @@
 package scalers
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -30,6 +32,7 @@ type metricsAPIScaler struct {
 type metricsAPIScalerMetadata struct {
 	targetValue           float64
 	activationTargetValue float64
+	format                string
 	url                   string
 	valueLocation         string
 	unsafeSsl             bool
@@ -59,6 +62,8 @@ type metricsAPIScalerMetadata struct {
 
 	scalerIndex int
 }
+
+type ParserFunc func(body []byte, valueLocation string) (float64, error)
 
 const (
 	methodValueQuery = "query"
@@ -138,6 +143,18 @@ func parseMetricsAPIMetadata(config *ScalerConfig) (*metricsAPIScalerMetadata, e
 		return nil, fmt.Errorf("no valueLocation given in metadata")
 	}
 
+	if val, ok := config.TriggerMetadata["format"]; ok {
+		switch val {
+		case "json":
+		case "prometheus":
+			meta.format = val
+		default:
+			return nil, fmt.Errorf("no support to parse format: %s", val)
+		}
+	} else {
+		meta.format = "json"
+	}
+
 	authMode, ok := config.TriggerMetadata["authMode"]
 	// no authMode specified
 	if !ok {
@@ -207,7 +224,13 @@ func parseMetricsAPIMetadata(config *ScalerConfig) (*metricsAPIScalerMetadata, e
 }
 
 // GetValueFromResponse uses provided valueLocation to access the numeric value in provided body
-func GetValueFromResponse(body []byte, valueLocation string) (float64, error) {
+func GetValueFromResponse(body []byte, valueLocation string, format string) (float64, error) {
+	parseValueFunc := GetParsingFunc(format)
+
+	return parseValueFunc(body, valueLocation)
+}
+
+func ParseValueJson(body []byte, valueLocation string) (float64, error) {
 	r := gjson.GetBytes(body, valueLocation)
 	errorMsg := "valueLocation must point to value of type number or a string representing a Quantity got: '%s'"
 	if r.Type == gjson.String {
@@ -221,6 +244,41 @@ func GetValueFromResponse(body []byte, valueLocation string) (float64, error) {
 		return 0, fmt.Errorf(errorMsg, r.Type.String())
 	}
 	return r.Num, nil
+}
+
+func ParseValuePrometheus(body []byte, valueLocation string) (float64, error) {
+	scanner := bufio.NewScanner(bytes.NewReader(body))
+	for scanner.Scan() {
+		line := scanner.Text()
+		fields := strings.Fields(line)
+		if len(fields) == 0 || strings.HasPrefix(fields[0], "#") {
+			continue
+		}
+		if len(fields) == 2 && strings.HasPrefix(fields[0], valueLocation) {
+			value, err := strconv.ParseFloat(fields[1], 64)
+			if err != nil {
+				return 0, err
+			}
+			return value, nil
+		}
+	}
+
+	if err := scanner.Err(); err != nil {
+		return 0, err
+	}
+
+	return 0, fmt.Errorf("Value %s not found", valueLocation)
+}
+
+func GetParsingFunc(format string) ParserFunc {
+	switch format {
+	case "json":
+		return ParseValueJson
+	case "prometheus":
+		return ParseValuePrometheus
+	}
+	// default
+	return ParseValueJson
 }
 
 func (s *metricsAPIScaler) getMetricValue(ctx context.Context) (float64, error) {
@@ -244,7 +302,7 @@ func (s *metricsAPIScaler) getMetricValue(ctx context.Context) (float64, error) 
 	if err != nil {
 		return 0, err
 	}
-	v, err := GetValueFromResponse(b, s.metadata.valueLocation)
+	v, err := GetValueFromResponse(b, s.metadata.valueLocation, s.metadata.format)
 	if err != nil {
 		return 0, err
 	}
